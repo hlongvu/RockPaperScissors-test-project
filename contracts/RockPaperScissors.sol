@@ -10,7 +10,6 @@ contract RockPaperScissors is Ownable {
 
     struct GameRoom {
         uint256 startTime;
-        address admin;
         address player1;
         address player2;
         bytes32 player1Choice;
@@ -20,6 +19,19 @@ contract RockPaperScissors is Ownable {
         mapping(address => uint) deposit;
         uint totalDeposit;
         uint requireCredit;
+        bool isEnd;
+        address winner;
+        mapping(address => bool) receivedReward;
+    }
+
+
+    struct GameRoomInfo {
+        address player1;
+        address player2;
+        uint totalDeposit;
+        uint requireCredit;
+        uint player1Deposit;
+        uint player2Deposit;
         bool isEnd;
         address winner;
     }
@@ -45,7 +57,6 @@ contract RockPaperScissors is Ownable {
         require(msg.value >= credit, "Must send ether credit when start new game!");
         GameRoom storage newGame = listGameRooms.push();
         newGame.startTime = block.timestamp;
-        newGame.admin = msg.sender;
         newGame.player1 = msg.sender;
         newGame.player2 = invitePlayer;
         newGame.requireCredit = credit;
@@ -74,22 +85,23 @@ contract RockPaperScissors is Ownable {
             selectedGame.deposit[msg.sender] = msg.value;
             selectedGame.totalDeposit += msg.value;
         } else if (selectedGame.player2 == msg.sender) {
-            revert("You're already in this room!");
+            selectedGame.deposit[msg.sender] = msg.value;
+            selectedGame.totalDeposit += msg.value;
         } else {
             revert("Room is full!");
         }
     }
 
-    function isNullChoice(string memory choice) private returns (bool){
+    function isNullChoice(string memory choice) private pure returns (bool){
         return bytes(choice).length <= 0;
     }
 
-    function isNullBytes(bytes32 choice) private returns (bool){
+    function isNullBytes(bytes32 choice) private pure returns (bool){
         return choice == 0;
     }
 
 
-    function isEqual(string memory a, string memory b) internal returns (bool){
+    function isEqual(string memory a, string memory b) internal pure returns (bool){
         return keccak256(abi.encodePacked(a)) == keccak256(abi.encodePacked(b));
     }
 
@@ -99,14 +111,16 @@ contract RockPaperScissors is Ownable {
         GameRoom storage selectedGame = listGameRooms[gameId];
         require(!selectedGame.isEnd, "Game ended!");
         require(msg.sender == selectedGame.player1 || msg.sender == selectedGame.player2, "Player must be in room");
+        require(selectedGame.deposit[msg.sender] >= selectedGame.requireCredit, "Require to join game!");
+
         if (msg.sender == selectedGame.player1 && isNullBytes(selectedGame.player1Choice)) {
-            console.log("move 1 send:");
-            console.logBytes32(move);
+            //            console.log("move 1 send:");
+            //            console.logBytes32(move);
             selectedGame.player1Choice = move;
         }
         if (msg.sender == selectedGame.player2 && isNullBytes(selectedGame.player2Choice)) {
-            console.log("move 2 send:");
-            console.logBytes32(move);
+            //            console.log("move 2 send:");
+            //            console.logBytes32(move);
             selectedGame.player2Choice = move;
         }
     }
@@ -120,8 +134,8 @@ contract RockPaperScissors is Ownable {
         require(!isNullBytes(selectedGame.player1Choice) && !isNullBytes(selectedGame.player2Choice), "Two player must make choice first");
 
         bytes32 revealedHash = keccak256(abi.encodePacked(move, salt));
-        console.log("Check Hash:");
-        console.logBytes32(revealedHash);
+        //        console.log("Check Hash:");
+        //        console.logBytes32(revealedHash);
         if (msg.sender == selectedGame.player1) {
             require(revealedHash == selectedGame.player1Choice, "Move is not valid");
             selectedGame.player1RevealChoice = move;
@@ -164,15 +178,32 @@ contract RockPaperScissors is Ownable {
         return selectedGame.winner;
     }
 
+    function getGameInfo(uint gameId) external view returns (GameRoomInfo memory){
+        GameRoom storage selectedGame = listGameRooms[gameId];
+        return GameRoomInfo(
+            selectedGame.player1,
+            selectedGame.player2,
+            selectedGame.totalDeposit,
+            selectedGame.requireCredit,
+            selectedGame.deposit[selectedGame.player1],
+            selectedGame.deposit[selectedGame.player2],
+            selectedGame.isEnd,
+            selectedGame.winner);
+    }
+
     function withdraw(uint gameId) external {
         GameRoom storage selectedGame = listGameRooms[gameId];
         require(selectedGame.isEnd, "Game is not ended!");
         if (selectedGame.winner != address(0)) {
             require(msg.sender == selectedGame.winner, "You are not winner");
+            require(!selectedGame.receivedReward[msg.sender], "Already withdraw!");
             payable(msg.sender).transfer(selectedGame.totalDeposit);
+            selectedGame.receivedReward[msg.sender] = true;
         } else {
             require(msg.sender == selectedGame.player1 || msg.sender == selectedGame.player2, "You are not in room");
+            require(!selectedGame.receivedReward[msg.sender], "Already withdraw!");
             payable(msg.sender).transfer(selectedGame.deposit[msg.sender]);
+            selectedGame.receivedReward[msg.sender] = true;
         }
     }
 
@@ -187,6 +218,60 @@ contract RockPaperScissors is Ownable {
         selectedGame.isEnd = true;
         selectedGame.winner = address(0);
         // any player can withdraw later with withdraw function;
+    }
+
+    function restartMatchWithCredit(uint fromGameId) external {
+        GameRoom storage selectedGame = listGameRooms[fromGameId];
+        require(selectedGame.isEnd, "Game not ended!");
+        require(msg.sender == selectedGame.player1 || msg.sender == selectedGame.player2);
+        require(!selectedGame.receivedReward[selectedGame.player1] &&
+        !selectedGame.receivedReward[selectedGame.player2], "Require deposit not moved"
+        );
+        if (selectedGame.winner == msg.sender) {
+            // winner restart game
+            GameRoom storage newGame = listGameRooms.push();
+            newGame.startTime = block.timestamp;
+            newGame.player1 = selectedGame.player1;
+            newGame.player2 = selectedGame.player2;
+            newGame.requireCredit = selectedGame.totalDeposit;
+            newGame.totalDeposit = selectedGame.totalDeposit;
+            newGame.player1Choice = "";
+            newGame.player2Choice = "";
+            newGame.isEnd = false;
+            newGame.winner = address(0);
+            newGame.deposit[msg.sender] = selectedGame.totalDeposit;
+
+            selectedGame.receivedReward[selectedGame.player1] = true;
+            selectedGame.receivedReward[selectedGame.player2] = true;
+
+            uint[] storage user_matches = matches[msg.sender];
+            user_matches.push(listGameRooms.length - 1);
+
+
+        } else if (selectedGame.winner == address(0)) {
+            // tie game
+            GameRoom storage newGame = listGameRooms.push();
+            newGame.startTime = block.timestamp;
+            newGame.player1 = selectedGame.player1;
+            newGame.player2 = selectedGame.player2;
+            newGame.requireCredit = selectedGame.requireCredit;
+            newGame.totalDeposit = selectedGame.totalDeposit;
+            newGame.player1Choice = "";
+            newGame.player2Choice = "";
+            newGame.isEnd = false;
+            newGame.winner = address(0);
+            newGame.deposit[selectedGame.player1] = selectedGame.deposit[selectedGame.player1];
+            newGame.deposit[selectedGame.player2] = selectedGame.deposit[selectedGame.player2];
+
+
+            selectedGame.receivedReward[selectedGame.player1] = true;
+            selectedGame.receivedReward[selectedGame.player2] = true;
+
+            uint[] storage user_matches = matches[msg.sender];
+            user_matches.push(listGameRooms.length - 1);
+        } else {
+            revert("You can not restart this game!");
+        }
     }
 
 }
